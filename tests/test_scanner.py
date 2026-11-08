@@ -344,3 +344,33 @@ def test_mac_scanner_skips_remote_mount_under_normal_folder(make_tree, tmp_path,
     assert meta.total_size == 50
 
 
+def test_mac_scanner_skips_system_volumes_firmlink_duplicates(make_tree, tmp_path, snapshot_map):
+    """测试 macOS 扫描根目录时跳过 /System/Volumes，避免 Data 卷重复计算翻倍。"""
+    root = make_tree({
+        "Users": {"alice": {"file.txt": 1000}},
+        "System": {
+            "Library": {"sys.dylib": 200},
+            "Volumes": {
+                "Data": {"Users": {"alice": {"file.txt": 1000}}},  # firmlink 镜像
+                "VM": {"swapfile": 500},
+            },
+        },
+    })
+
+    db, meta = _scan(root, tmp_path)
+    entries = snapshot_map(db)
+
+    # 根层级的 Users 和 System/Library 正常计入
+    assert entries[os.path.join("Users", "alice", "file.txt")].size == 1000
+    assert entries[os.path.join("System", "Library", "sys.dylib")].size == 200
+
+    # System/Volumes 被记为挂载点目录（size=0），内部 Data/VM 绝不重复扫描
+    assert os.path.join("System", "Volumes") in entries
+    assert entries[os.path.join("System", "Volumes")].size == 0
+    assert os.path.join("System", "Volumes", "Data") not in entries
+
+    # 总大小应为 1000 + 200 = 1200，绝不包含 Volumes 内部的重复数据
+    assert meta.total_size == 1200
+
+
+

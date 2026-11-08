@@ -66,7 +66,12 @@ def _rmtree(path: str) -> None:
     if not path or not os.path.lexists(_fs_path(path)):
         return
     try:
-        shutil.rmtree(_fs_path(path), onexc=_rmtree_retry)
+        if sys.version_info >= (3, 12):
+            shutil.rmtree(_fs_path(path), onexc=_rmtree_retry)
+        else:
+            def _onerror(func, p, excinfo):
+                _rmtree_retry(func, p, excinfo[1] if excinfo else None)
+            shutil.rmtree(_fs_path(path), onerror=_onerror)
     except OSError:
         pass
 

@@ -342,8 +342,20 @@ class _Scan:
                     # macOS 平台挂载点与 NAS/网络卷隔离保护：
                     if descend and sys.platform == "darwin":
                         entry_path = entry.path
+                        # 0. 排除系统内部卷目录（/System/Volumes 挂载了 Data、VM、Preboot 等）
+                        #    其中 Data 卷已由 macOS firmlink 透明映射至根目录（/Users, /Applications, /Library 等），
+                        #    若深入扫描将导致整盘用户数据被重复遍历一遍、空间大小严重虚高（翻倍）！
+                        if (
+                            entry_path == "/System/Volumes"
+                            or entry_path.startswith("/System/Volumes/")
+                            or (node.abspath == "/System" and entry.name == "Volumes")
+                            or (node.rel == "System" and entry.name == "Volumes")
+                            or node.rel.startswith("System" + os.sep + "Volumes")
+                        ) and self.meta.root != entry_path:
+                            descend = False
+                            tag = tag or 0xA0000003
                         # 1. 根目录扫描时，排除系统设备目录（/dev、/.vol）
-                        if node.abspath == "/" and entry.name in {".vol", "dev"}:
+                        elif node.abspath == "/" and entry.name in {".vol", "dev"}:
                             descend = False
                             tag = tag or 0xA0000003
                         # 2. 根目录扫描时，排除 /Volumes 下的外部挂载点（NAS、移动硬盘、U盘等）

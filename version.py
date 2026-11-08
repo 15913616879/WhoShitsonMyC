@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import re
 
-__version__ = "1.1.8"
+__version__ = "1.1.9"
 
 # GitHub 仓库（检查更新 / 发布页）
 GITHUB_OWNER = "Kami958"

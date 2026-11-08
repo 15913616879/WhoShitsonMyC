@@ -3,6 +3,22 @@
 
 function wireEvents() {
   $("#newScanBtn").onclick = newScan;
+  const sshScanBtn = $("#sshScanBtn");
+  if (sshScanBtn) sshScanBtn.onclick = openSshScanDialog;
+  const sshCloseBtn = $("#sshCloseBtn");
+  if (sshCloseBtn) sshCloseBtn.onclick = closeSshScanDialog;
+  const sshCancelBtn = $("#sshCancelBtn");
+  if (sshCancelBtn) sshCancelBtn.onclick = closeSshScanDialog;
+  const sshTestBtn = $("#sshTestBtn");
+  if (sshTestBtn) sshTestBtn.onclick = testSshConnection;
+  const sshStartBtn = $("#sshStartBtn");
+  if (sshStartBtn) sshStartBtn.onclick = startSshScan;
+  const sshOverlay = $("#sshScanOverlay");
+  if (sshOverlay) {
+    sshOverlay.onclick = (e) => {
+      if (e.target === sshOverlay) closeSshScanDialog();
+    };
+  }
   $("#compareBtn").onclick = doCompare;
   $("#swapBtn").onclick = swapPick;
   $("#clearPickBtn").onclick = clearPick;

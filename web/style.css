@@ -133,12 +133,40 @@ body.is-sidebar-resizing .main {
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);
   display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  justify-content: center;
-  gap: 6px;
+  flex-direction: row;
+  align-items: center;
+  justify-content: stretch;
+  gap: 8px;
 }
-.side-head > .btn-primary { width: 100%; }
+.side-head > .btn-primary {
+  flex: 1.1;
+  min-width: 0;
+  padding: 8px 6px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.side-ssh-btn {
+  flex: 0.9;
+  min-width: 0;
+  padding: 8px 6px;
+  font-size: 13px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  color: var(--text-main);
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+.side-ssh-btn:hover {
+  background: var(--bg-hover);
+  border-color: var(--accent);
+  color: var(--accent);
+}
 /* 磁盘清理入口暂不接入产品：强制隐藏（实现代码保留） */
 .side-disk-cleanup,
 #diskCleanupBtn {
@@ -4342,3 +4370,78 @@ select.ai-settings-input:focus {
 
 /* 次要按钮悬停：边框转主题色、文字加深。放在文件末尾，同权重下能盖住各处针对 .btn-ghost 边框的单独规则。 */
 .btn-ghost:hover { border-color: var(--accent); color: var(--text); }
+
+/* SSH / NAS 扫描对话框 */
+.ssh-card {
+  max-width: 520px;
+  width: 90%;
+  background: var(--bg-card);
+  border-radius: 10px;
+  box-shadow: 0 12px 36px rgba(0,0,0,0.25);
+  border: 1px solid var(--border);
+}
+.ssh-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 14px 0;
+}
+.ssh-form-row {
+  display: flex;
+  gap: 12px;
+}
+.ssh-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.ssh-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+.ssh-shares-row {
+  background: var(--bg-sub, rgba(127,127,127,0.06));
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+.ssh-shares-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+  max-height: 110px;
+  overflow-y: auto;
+}
+.ssh-share-chip {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.ssh-share-chip:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--bg-hover);
+}
+.ssh-status-msg {
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.ssh-status-msg.success {
+  background: rgba(46, 160, 67, 0.12);
+  color: #2ea043;
+  border: 1px solid rgba(46, 160, 67, 0.3);
+}
+.ssh-status-msg.error {
+  background: rgba(218, 54, 51, 0.12);
+  color: #da3633;
+  border: 1px solid rgba(218, 54, 51, 0.3);
+}

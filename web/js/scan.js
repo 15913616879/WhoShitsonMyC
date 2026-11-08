@@ -302,3 +302,142 @@ function onPyEvent(event, payload) {
   }
 }
 window.__onPyEvent = onPyEvent;
+
+// ---- SSH / NAS 扫描对话框 ----
+
+function openSshScanDialog() {
+  const overlay = $("#sshScanOverlay");
+  if (!overlay) return;
+
+  // 从 localStorage 恢复或使用预设
+  const host = localStorage.getItem("wsmc_ssh_host") || "192.168.1.2";
+  const port = localStorage.getItem("wsmc_ssh_port") || "27837";
+  const user = localStorage.getItem("wsmc_ssh_user") || "sushichenpi";
+  const pwd = localStorage.getItem("wsmc_ssh_password") || "Sushi=888";
+  const path = localStorage.getItem("wsmc_ssh_path") || "/volume1/苏氏公开";
+
+  if ($("#sshHostInput")) $("#sshHostInput").value = host;
+  if ($("#sshPortInput")) $("#sshPortInput").value = port;
+  if ($("#sshUserInput")) $("#sshUserInput").value = user;
+  if ($("#sshPasswordInput")) $("#sshPasswordInput").value = pwd;
+  if ($("#sshPathInput")) $("#sshPathInput").value = path;
+
+  const statusMsg = $("#sshStatusMsg");
+  if (statusMsg) {
+    statusMsg.className = "ssh-status-msg hidden";
+    statusMsg.textContent = "";
+  }
+  const sharesRow = $("#sshSharesRow");
+  if (sharesRow) sharesRow.classList.add("hidden");
+
+  overlay.classList.remove("hidden");
+}
+
+function closeSshScanDialog() {
+  const overlay = $("#sshScanOverlay");
+  if (overlay) overlay.classList.add("hidden");
+}
+
+async function testSshConnection() {
+  const host = ($("#sshHostInput")?.value || "").trim();
+  const port = parseInt($("#sshPortInput")?.value || "22", 10) || 22;
+  const user = ($("#sshUserInput")?.value || "").trim();
+  const pwd = $("#sshPasswordInput")?.value || "";
+
+  const testBtn = $("#sshTestBtn");
+  const statusMsg = $("#sshStatusMsg");
+  const sharesRow = $("#sshSharesRow");
+  const sharesList = $("#sshSharesList");
+
+  if (!host) {
+    toast("请输入 NAS 服务器地址", true);
+    return;
+  }
+
+  if (testBtn) {
+    testBtn.disabled = true;
+    testBtn.textContent = "正在连接 NAS...";
+  }
+  if (statusMsg) {
+    statusMsg.className = "ssh-status-msg hidden";
+    statusMsg.textContent = "";
+  }
+
+  try {
+    const res = await state.api.test_ssh(host, port, user, pwd);
+    if (!res || !res.ok) {
+      if (statusMsg) {
+        statusMsg.className = "ssh-status-msg error";
+        statusMsg.textContent = "连接失败：" + (res && res.error ? res.error : "未知错误");
+      }
+      return;
+    }
+
+    if (statusMsg) {
+      statusMsg.className = "ssh-status-msg success";
+      statusMsg.textContent = "✅ 连接成功！已探测到群晖 NAS 共享文件夹。";
+    }
+
+    // 保存有效配置
+    localStorage.setItem("wsmc_ssh_host", host);
+    localStorage.setItem("wsmc_ssh_port", String(port));
+    localStorage.setItem("wsmc_ssh_user", user);
+    localStorage.setItem("wsmc_ssh_password", pwd);
+
+    if (res.shares && res.shares.length > 0 && sharesList && sharesRow) {
+      sharesList.innerHTML = "";
+      res.shares.forEach((share) => {
+        const chip = document.createElement("button");
+        chip.type = "button";
+        chip.className = "ssh-share-chip";
+        chip.textContent = share;
+        chip.onclick = () => {
+          if ($("#sshPathInput")) $("#sshPathInput").value = share;
+        };
+        sharesList.appendChild(chip);
+      });
+      sharesRow.classList.remove("hidden");
+    }
+  } catch (err) {
+    if (statusMsg) {
+      statusMsg.className = "ssh-status-msg error";
+      statusMsg.textContent = "连接异常：" + String(err);
+    }
+  } finally {
+    if (testBtn) {
+      testBtn.disabled = false;
+      testBtn.textContent = "🔍 测试连接 & 探测路径";
+    }
+  }
+}
+
+async function startSshScan() {
+  const host = ($("#sshHostInput")?.value || "").trim();
+  const port = parseInt($("#sshPortInput")?.value || "22", 10) || 22;
+  const user = ($("#sshUserInput")?.value || "").trim();
+  const pwd = $("#sshPasswordInput")?.value || "";
+  const path = ($("#sshPathInput")?.value || "").trim();
+
+  if (!host || !path) {
+    toast("NAS 地址和目标路径不能为空", true);
+    return;
+  }
+
+  // 保存记录
+  localStorage.setItem("wsmc_ssh_host", host);
+  localStorage.setItem("wsmc_ssh_port", String(port));
+  localStorage.setItem("wsmc_ssh_user", user);
+  localStorage.setItem("wsmc_ssh_password", pwd);
+  localStorage.setItem("wsmc_ssh_path", path);
+
+  closeSshScanDialog();
+
+  const displayRoot = port !== 22 ? `ssh://${host}:${port}${path}` : `ssh://${host}${path}`;
+  showScanOverlay(displayRoot);
+
+  const res = await state.api.start_ssh_scan(host, port, user, pwd, path);
+  if (res && res.error) {
+    hideScanOverlay();
+    toast(res.error, true);
+  }
+}

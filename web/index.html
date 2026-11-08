@@ -29,7 +29,7 @@
       try { localStorage.setItem("theme", theme); } catch (e) {}
     })();
   </script>
-  <link rel="stylesheet" href="style.css?v=1.1.8.2" />
+  <link rel="stylesheet" href="style.css?v=1.1.9" />
 </head>
 <body>
   <div class="layout">
@@ -37,6 +37,7 @@
     <aside class="sidebar" id="sidebar">
       <div class="side-head">
         <button id="newScanBtn" class="btn-primary" data-i18n="newScan">＋ 新建扫描</button>
+        <button id="sshScanBtn" class="btn-secondary side-ssh-btn" type="button" title="通过 SSH 高速扫描群晖 NAS 或 Linux 服务器">🌐 NAS 扫描</button>
         <!-- 磁盘清理入口暂不接入：隐藏按钮，逻辑见 web/js/ai.js 中 disk cleanup 段 -->
         <button id="diskCleanupBtn" class="btn-plain side-disk-cleanup hidden" type="button" hidden data-module="ai" data-i18n="diskCleanupBtn" data-i18n-title="diskCleanupTitle" title="基于快照或目录做 AI 清理分析" aria-hidden="true">🧹 AI 清理</button>
       </div>
@@ -515,6 +516,60 @@
       <div id="scanElapsed" class="scan-elapsed" data-i18n="scanElapsedInit">已用时 0:00</div>
       <div id="scanCurrent" class="scan-current" title=""></div>
       <button id="cancelScanBtn" class="btn-ghost" data-i18n="cancel">取消</button>
+    </div>
+  </div>
+
+  <!-- SSH / NAS 扫描弹窗 -->
+  <div id="sshScanOverlay" class="overlay hidden">
+    <div class="note-card ssh-card" role="dialog" aria-modal="true" aria-labelledby="sshDialogTitle">
+      <div class="note-head">
+        <h2 id="sshDialogTitle" class="note-title">🌐 SSH / 群晖 NAS 高速扫描</h2>
+        <button id="sshCloseBtn" class="btn-plain settings-close" type="button" title="关闭">✕</button>
+      </div>
+      <p class="note-hint">直接在 NAS 本地运行扫描，避免 SMB 网络协议缓慢问题，极速生成对比快照。</p>
+      
+      <div class="ssh-form">
+        <div class="ssh-form-row">
+          <div class="ssh-field" style="flex: 2;">
+            <label class="ssh-label">NAS 地址 / IP</label>
+            <input id="sshHostInput" class="note-input" type="text" placeholder="192.168.1.2" value="192.168.1.2" />
+          </div>
+          <div class="ssh-field" style="flex: 1;">
+            <label class="ssh-label">SSH 端口</label>
+            <input id="sshPortInput" class="note-input" type="number" placeholder="22" value="27837" />
+          </div>
+        </div>
+
+        <div class="ssh-form-row">
+          <div class="ssh-field" style="flex: 1;">
+            <label class="ssh-label">SSH 用户名</label>
+            <input id="sshUserInput" class="note-input" type="text" placeholder="admin" value="sushichenpi" />
+          </div>
+          <div class="ssh-field" style="flex: 1;">
+            <label class="ssh-label">SSH 密码</label>
+            <input id="sshPasswordInput" class="note-input" type="password" placeholder="密码" value="Sushi=888" />
+          </div>
+        </div>
+
+        <div class="ssh-field">
+          <label class="ssh-label">目标路径（NAS 内部绝对路径）</label>
+          <input id="sshPathInput" class="note-input" type="text" placeholder="/volume1/共享文件夹" value="/volume1/苏氏公开" />
+        </div>
+
+        <div id="sshSharesRow" class="ssh-shares-row hidden">
+          <label class="ssh-label">探测到的共享文件夹（点击填充）：</label>
+          <div id="sshSharesList" class="ssh-shares-list"></div>
+        </div>
+
+        <div id="sshStatusMsg" class="ssh-status-msg hidden"></div>
+      </div>
+
+      <div class="note-foot">
+        <button id="sshTestBtn" class="btn-secondary compact" type="button">🔍 测试连接 & 探测路径</button>
+        <span class="note-foot-spacer"></span>
+        <button id="sshCancelBtn" class="btn-plain" type="button">取消</button>
+        <button id="sshStartBtn" class="btn-primary compact" type="button">🚀 开始极速扫描</button>
+      </div>
     </div>
   </div>
 

@@ -25,10 +25,6 @@ DIST_DIR = os.path.join(ROOT, "dist")
 
 _EXCLUDES = [
     "dev",
-    "cryptography",
-    "cryptography.hazmat",
-    "cryptography.x509",
-    "bcrypt",
     "gevent",
     "geventwebsocket",
     "greenlet",
@@ -139,6 +135,8 @@ def build_mac_app(*, with_ai: bool = False) -> str:
         f"{icon_path}:." if os.path.isfile(icon_path) else f"{os.path.join(ROOT, 'logo.png')}:.",
         "--osx-bundle-identifier",
         "io.github.kami958.whoshitsonmyc",
+        "--hidden-import",
+        "paramiko",
         *icon_arg,
     ]
     for mod in excludes:

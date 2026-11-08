@@ -59,6 +59,126 @@ class ScanMixin:
         self._scan_thread.start()
         return {"started": True}
 
+    def test_ssh(self, host: str, port: int = 22, user: str = "", password: str = "") -> dict:
+        """测试 SSH 远程连接并返回可用的共享文件夹列表。"""
+        from core import ssh_scanner
+        try:
+            p = int(port or 22)
+            return ssh_scanner.test_ssh_connection(str(host or ""), p, str(user or ""), str(password or ""))
+        except Exception as exc:
+            applog.exception("test_ssh failed", exc)
+            return {"ok": False, "error": str(exc)}
+
+    def start_ssh_scan(
+        self,
+        host: str,
+        port: int = 22,
+        user: str = "",
+        password: str = "",
+        remote_root: str = "",
+    ) -> dict:
+        """启动 SSH 远程高速扫描。"""
+        if self._scan_thread and self._scan_thread.is_alive():
+            return {"error": i18n.t(
+                "已有扫描正在进行", "A scan is already in progress")}
+        status = store.storage_status()
+        if status.get("snapshot_dir_unavailable"):
+            return {
+                "error": _snapshot_dir_error_message(
+                    str(status.get("reason") or "")
+                )
+            }
+        if not status.get("ok"):
+            return {"error": _data_dir_unavailable_message(
+                str(status.get("path") or ""),
+                str(status.get("reason") or ""),
+            )}
+
+        h = str(host or "").strip()
+        u = str(user or "").strip()
+        pwd = str(password or "")
+        r = str(remote_root or "").strip()
+        try:
+            p = int(port or 22)
+        except (ValueError, TypeError):
+            p = 22
+
+        if not h or not r:
+            return {"error": i18n.t("服务器地址和远程路径不能为空", "Host and remote path cannot be empty")}
+
+        self._cancel.clear()
+        applog.info(f"SSH Scan starting host={h}:{p} user={u} root={r}")
+        self._scan_thread = threading.Thread(
+            target=self._run_ssh_scan, args=(h, p, u, pwd, r), daemon=True
+        )
+        self._scan_thread.start()
+        return {"started": True}
+
+    def _run_ssh_scan(
+        self,
+        host: str,
+        port: int,
+        user: str,
+        password: str,
+        remote_root: str,
+    ) -> None:
+        """后台线程体：执行 SSH 远程扫描并生成本地快照。"""
+        from core import ssh_scanner
+        from core.snapshot import read_meta
+        db_path = ""
+        t_wall0 = time.perf_counter()
+
+        def on_prog(data: dict) -> None:
+            self._emit("scan-progress", {
+                "files": data.get("files", 0),
+                "current": data.get("current", ""),
+            })
+
+        try:
+            display_root = f"ssh://{host}:{port}{remote_root}" if port != 22 else f"ssh://{host}{remote_root}"
+            db_path = store.new_snapshot_path(display_root)
+            res = ssh_scanner.execute_remote_scan(
+                host=host,
+                port=port,
+                user=user,
+                password=password,
+                remote_root=remote_root,
+                local_db_path=db_path,
+                on_progress=on_prog,
+                cancel_event=self._cancel,
+            )
+            meta = read_meta(db_path)
+        except Exception as exc:
+            applog.exception("SSH scan failed", exc)
+            if db_path and os.path.exists(db_path):
+                try:
+                    store.delete_snapshot(db_path, permanent=True)
+                except Exception:
+                    pass
+            self._emit("scan-error", {"message": str(exc)})
+            return
+
+        elapsed_s = max(0.0, time.perf_counter() - t_wall0)
+        applog.info(
+            f"SSH Scan done file_count={meta.file_count} "
+            f"total_size={meta.total_size} elapsed_s={elapsed_s:.2f}"
+        )
+        self._emit(
+            "scan-done",
+            {
+                "snapshot": {
+                    "path": db_path,
+                    "root": meta.root,
+                    "scanned_at": meta.scanned_at,
+                    "total_size": meta.total_size,
+                    "file_count": meta.file_count,
+                    "skipped_count": 0,
+                    "compressed": False,
+                },
+                "elapsed_s": round(elapsed_s, 2),
+            },
+        )
+
     def cancel_scan(self) -> dict:
         """请求取消正在进行的扫描。"""
         self._cancel.set()

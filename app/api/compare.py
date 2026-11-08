@@ -372,6 +372,24 @@ class CompareMixin:
             rel = str(item.get("rel_path") or item.get("rel") or "").strip()
             name = str(item.get("name") or "").strip()
             is_dir = item.get("is_dir")
+
+            if root.startswith("ssh://"):
+                import posixpath, urllib.parse
+                parsed = urllib.parse.urlparse(root)
+                remote_full = posixpath.normpath(posixpath.join(parsed.path, rel))
+                if not rel or remote_full in ("", "/", "/volume1", "/volume2"):
+                    rejected.append({
+                        "index": i, "root": root, "rel": rel, "path": remote_full,
+                        "name": name or rel, "is_dir": bool(is_dir), "code": "root", "ok": False,
+                        "error": _delete_error_message("root", root=root, rel_path=rel),
+                    })
+                else:
+                    allowed.append({
+                        "index": i, "root": root, "rel": rel, "path": remote_full,
+                        "name": name or rel, "is_dir": bool(is_dir), "code": "ok", "ok": True,
+                    })
+                continue
+
             ev = fs_delete.evaluate_pending_candidate(
                 root, rel, bl, require_exists=False
             )
@@ -425,6 +443,45 @@ class CompareMixin:
                 "rel": rel_path,
                 "items": int(info.get("items") or 0),
             })
+
+        if root.startswith("ssh://"):
+            import posixpath, urllib.parse
+            from core import ssh_scanner
+            parsed = urllib.parse.urlparse(root)
+            host = parsed.hostname or ""
+            port = parsed.port or 22
+            remote_full = posixpath.normpath(posixpath.join(parsed.path, rel_path))
+            if not rel_path or remote_full in ("", "/", "/volume1", "/volume2", "/volume3"):
+                return {"error": _delete_error_message("root", root=root, rel_path=rel_path), "code": "root"}
+            
+            creds = ssh_scanner.get_cached_credentials(host, port, parsed.username or "")
+            if not creds:
+                return {
+                    "error": i18n.t(
+                        "未找到远程 SSH 密码，请先在「NAS 扫描」弹窗中点击测试连接以激活凭证",
+                        "SSH credentials not cached. Please test connection in NAS Scan dialog first.",
+                    ),
+                    "code": "auth_missing",
+                }
+            try:
+                res = ssh_scanner.remote_delete(
+                    host=host,
+                    port=port,
+                    user=creds["user"],
+                    password=creds["password"],
+                    remote_path=remote_full,
+                    permanent=bool(permanent),
+                )
+                applog.info(f"SSH remote_delete ok: {res}")
+                return {
+                    "ok": True,
+                    "path": remote_full,
+                    "permanent": bool(permanent),
+                    "recycled": not bool(permanent),
+                }
+            except Exception as exc:
+                applog.exception("SSH remote_delete failed", exc)
+                return {"error": str(exc), "code": "fail"}
 
         try:
             full = fs_delete.assert_deletable(root, rel_path, bl)

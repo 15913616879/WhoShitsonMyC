@@ -373,4 +373,39 @@ def test_mac_scanner_skips_system_volumes_firmlink_duplicates(make_tree, tmp_pat
     assert meta.total_size == 1200
 
 
+def test_sparse_file_allocated_size(make_tree, tmp_path, snapshot_map, monkeypatch):
+    """测试稀疏文件（如虚拟机镜像）按真实磁盘物理分配块计算，避免名义大小虚高。"""
+    import os
+    import core.scanner as scanner
+
+    root = make_tree({"sparse.img": 1000000})
+
+    orig_stat = os.DirEntry.stat
+
+    class FakeStat:
+        def __init__(self, real):
+            self._real = real
+            self.st_size = 1000000  # 名义逻辑大小 1,000,000 字节
+            self.st_blocks = 4       # 实际物理分配 4 块 * 512 = 2048 字节
+            self.st_mtime = real.st_mtime
+            self.st_mode = real.st_mode
+            self.st_reparse_tag = 0
+
+    def mock_entry_stat(self, follow_symlinks=True):
+        st = orig_stat(self, follow_symlinks=follow_symlinks)
+        if self.name == "sparse.img":
+            return FakeStat(st)
+        return st
+
+    monkeypatch.setattr(os.DirEntry, "stat", mock_entry_stat)
+
+    db, meta = _scan(root, tmp_path)
+    entries = snapshot_map(db)
+
+    # 实际应取 min(1000000, 4 * 512) = 2048
+    assert entries["sparse.img"].size == 2048
+    assert meta.total_size == 2048
+
+
+
 

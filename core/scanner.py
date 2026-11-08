@@ -434,6 +434,14 @@ class _Scan:
                         # 文件、或不深入的符号链接/重解析点文件：取自身大小。
                         try:
                             size, mtime = st.st_size, int(st.st_mtime)
+                            # 在 macOS / POSIX 上处理稀疏文件与压缩文件：
+                            # 像虚拟机/Docker 镜像等稀疏文件，名义大小可能高达上百 GB，
+                            # 但在磁盘上实际仅占极少量物理块（st_blocks * 512）。
+                            # 取 min(st_size, blocks * 512) 能精准反映真实物理磁盘占用，
+                            # 彻底杜绝总占用超过物理硬盘总容量的虚高假象。
+                            blocks = getattr(st, "st_blocks", None)
+                            if blocks is not None and not tag:
+                                size = min(size, blocks * 512)
                         except (OSError, ValueError, AttributeError):
                             size, mtime = 0, 0
                         file_batch.append(

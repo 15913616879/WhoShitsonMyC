@@ -256,3 +256,91 @@ def test_lone_surrogate_name_does_not_break_scan(make_tree, tmp_path, snapshot_m
     assert entries["ok.txt"].size == 40
     assert meta.file_count == 2
     assert meta.total_size == 100
+
+
+def test_mac_remote_mount_detection():
+    """测试 macOS 下远程/网络文件系统（如 SMB/NAS）的探测。"""
+    import sys
+    from core.scanner import _is_remote_mount
+
+    if sys.platform != "darwin":
+        pytest.skip("macOS only")
+    # 本地根不是 remote
+    assert _is_remote_mount("/") is False
+    # 若存在网络共享测试
+    if os.path.exists("/Volumes/苏氏公开"):
+        assert _is_remote_mount("/Volumes/苏氏公开") is True
+
+
+def test_mac_scanner_does_not_descend_into_nas(make_tree, tmp_path, snapshot_map, monkeypatch):
+    """测试 macOS 扫描根目录时不会扫进网络挂载目录。"""
+    import sys
+    import core.scanner as scanner
+
+    root = make_tree({
+        "Users": {"myuser": {"a.txt": 100}},
+        "Volumes": {"nas": {"huge_file.bin": 9999999}},
+    })
+
+    # 模拟 root 为 "/" 扫描场景
+    nas_path = os.path.join(root, "Volumes", "nas")
+
+    # monkeypatch 让 scanner 把 root 当作 "/" 且 nas_path 识别为 mount
+    orig_init = scanner._Scan.__init__
+
+    def mock_init(self, meta, **kwargs):
+        orig_init(self, meta, **kwargs)
+        self.is_root_scan = True
+
+    monkeypatch.setattr(scanner._Scan, "__init__", mock_init)
+    
+    orig_ismount = os.path.ismount
+    def mock_ismount(path):
+        if path == nas_path:
+            return True
+        return orig_ismount(path)
+
+    monkeypatch.setattr(scanner.os.path, "ismount", mock_ismount)
+
+    db, meta = _scan(root, tmp_path)
+    entries = snapshot_map(db)
+
+    # 普通目录被正常扫描
+    assert entries[os.path.join("Users", "myuser", "a.txt")].size == 100
+    # nas 目录被记录为挂载点目录（size=0），里面的 huge_file.bin 绝不进入快照
+    assert os.path.join("Volumes", "nas") in entries
+    assert entries[os.path.join("Volumes", "nas")].size == 0
+    assert entries[os.path.join("Volumes", "nas")].is_dir is True
+    assert os.path.join("Volumes", "nas", "huge_file.bin") not in entries
+    assert meta.total_size == 100  # 仅 100，不含 NAS 上的 9999999
+
+
+def test_mac_scanner_skips_remote_mount_under_normal_folder(make_tree, tmp_path, snapshot_map, monkeypatch):
+    """测试 macOS 扫描普通子目录时，若遇到 NAS/远程挂载点也不会深入。"""
+    import core.scanner as scanner
+
+    root = make_tree({
+        "docs": {"note.txt": 50},
+        "mnt_nas": {"remote.bin": 888888},
+    })
+    nas_dir = os.path.join(root, "mnt_nas")
+
+    orig_ismount = os.path.ismount
+    def mock_ismount(path):
+        if path == nas_dir:
+            return True
+        return orig_ismount(path)
+
+    monkeypatch.setattr(scanner.os.path, "ismount", mock_ismount)
+    monkeypatch.setattr(scanner, "_is_remote_mount", lambda p: p == nas_dir)
+
+    db, meta = _scan(root, tmp_path)
+    entries = snapshot_map(db)
+
+    assert entries[os.path.join("docs", "note.txt")].size == 50
+    assert "mnt_nas" in entries
+    assert entries["mnt_nas"].size == 0
+    assert os.path.join("mnt_nas", "remote.bin") not in entries
+    assert meta.total_size == 50
+
+

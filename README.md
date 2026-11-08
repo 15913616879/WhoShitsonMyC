@@ -12,8 +12,8 @@
 <p align="center">
   <a href="https://github.com/Kami958/WhoShitsonMyC/releases"><img src="https://img.shields.io/github/v/release/Kami958/WhoShitsonMyC?style=flat-square&label=release&sort=semver" alt="Release" /></a>
   <a href="https://github.com/Kami958/WhoShitsonMyC/blob/master/LICENSE"><img src="https://img.shields.io/github/license/Kami958/WhoShitsonMyC?style=flat-square" alt="License" /></a>
-  <img src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0A7EA4?style=flat-square" alt="Platform" />
-  <img src="https://img.shields.io/badge/UI-WebView2-1F6FEB?style=flat-square" alt="WebView2" />
+  <img src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011%20%7C%20macOS-0A7EA4?style=flat-square" alt="Platform" />
+  <img src="https://img.shields.io/badge/UI-WebView2%20%7C%20WebKit-1F6FEB?style=flat-square" alt="UI" />
 </p>
 
 ---
@@ -100,11 +100,9 @@
 
 > 是的，我们也在你的 C 盘底下拉了一点 💩
 
-软件在本机产生的配置文件与默认快照，默认都存放在：
-
-`%LOCALAPPDATA%\WhoShitsOnMyC`
-
-你可以把这条路径粘贴到资源管理器地址栏后回车打开
+软件在本机产生的配置文件与默认快照存放位置：
+- **Windows**: `%LOCALAPPDATA%\WhoShitsOnMyC`
+- **macOS**: `~/Library/Application Support/WhoShitsOnMyC`
 
 | 内容 | 位置 |
 | --- | --- |
@@ -123,7 +121,28 @@
 
 ## 开发者
 
-源码运行、测试与打包见 [开发者文档（由AI维护）](assets/docs/Designed.md)。AI 默认关闭，重新接入见 [ai-reenable.md](assets/docs/ai-reenable.md)
+源码运行、测试与打包见 [开发者文档（由AI维护）](assets/docs/Designed.md)。AI 默认关闭，重新接入见 [ai-reenable.md](assets/docs/ai-reenable.md)。
+
+### macOS 运行与打包
+
+```bash
+# 1. 激活虚拟环境并安装依赖
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt pyobjc-framework-WebKit
+
+# 2. 运行单元测试
+pytest tests -q --ignore=tests/test_mft.py
+
+# 3. 本地启动应用
+python app.py
+
+# 4. 构建 macOS 原生 .app 及 .dmg 安装镜像
+python build_mac.py
+# 产物输出在 dist/ 目录下：
+# - dist/WhoShitsOnMyC.app
+# - dist/WhoShitsOnMyC-v1.1.8-mac-arm64.dmg
+```
 
 ## 许可
 

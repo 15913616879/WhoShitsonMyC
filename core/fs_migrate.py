@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -187,9 +188,14 @@ def validate_migrate(source: str, dest: str) -> dict:
         base["code"] = "invalid_dest"
         return base
     # 互不嵌套：dest 不能建在 source 里，source 不能是 dest 的子目录
-    src_key = os.path.normcase(os.path.normpath(src)).rstrip("\\")
-    dst_key = os.path.normcase(os.path.normpath(dst)).rstrip("\\")
-    if dst_key.startswith(src_key + "\\") or src_key.startswith(dst_key + "\\"):
+    src_key = os.path.normcase(os.path.normpath(src)).rstrip("\\/")
+    dst_key = os.path.normcase(os.path.normpath(dst)).rstrip("\\/")
+    if (
+        dst_key.startswith(src_key + "\\")
+        or dst_key.startswith(src_key + "/")
+        or src_key.startswith(dst_key + "\\")
+        or src_key.startswith(dst_key + "/")
+    ):
         base["code"] = "inside_each"
         return base
     # 跨文件系统类型直接拒绝：FAT32/exFAT 存不下链接，时间戳精度也对不上
@@ -198,7 +204,7 @@ def validate_migrate(source: str, dest: str) -> dict:
     if src_fs and dst_fs and src_fs != dst_fs:
         base["code"] = "fs_mismatch"
         return base
-    if os.name != "nt":
+    if os.name != "nt" and sys.platform != "darwin":
         base["code"] = "not_windows"
         return base
     base["ok"] = True
@@ -242,7 +248,7 @@ def validate_remigrate(link: str, dest: str) -> dict:
         base["code"] = "old_target_pending"
         return base
     dst = str(base["dest"])
-    if not dst or not os.path.dirname(dst.rstrip("\\/")):
+    if not dst:
         base["code"] = "invalid_dest"
         return base
     if _same_path(old_target, dst) or _same_path(link_path, dst):
@@ -251,14 +257,22 @@ def validate_remigrate(link: str, dest: str) -> dict:
     if is_drive_root(dst):
         base["code"] = "drive_root"
         return base
+    if not os.path.dirname(dst.rstrip("\\/")):
+        base["code"] = "invalid_dest"
+        return base
     if os.path.exists(dst):
         base["code"] = "dest_exists"
         return base
     # 互不嵌套：新目标不能建在旧目标里，也不能建在链接路径里（后者会写进旧目标）
     for other in (old_target, link_path):
-        other_key = os.path.normcase(os.path.normpath(other)).rstrip("\\")
-        dst_key = os.path.normcase(os.path.normpath(dst)).rstrip("\\")
-        if dst_key.startswith(other_key + "\\") or other_key.startswith(dst_key + "\\"):
+        other_key = os.path.normcase(os.path.normpath(other)).rstrip("\\/")
+        dst_key = os.path.normcase(os.path.normpath(dst)).rstrip("\\/")
+        if (
+            dst_key.startswith(other_key + "\\")
+            or dst_key.startswith(other_key + "/")
+            or other_key.startswith(dst_key + "\\")
+            or other_key.startswith(dst_key + "/")
+        ):
             base["code"] = "inside_each"
             return base
     # 跨文件系统类型直接拒绝：FAT32/exFAT 存不下链接，时间戳精度也对不上
@@ -267,7 +281,7 @@ def validate_remigrate(link: str, dest: str) -> dict:
     if src_fs and dst_fs and src_fs != dst_fs:
         base["code"] = "fs_mismatch"
         return base
-    if os.name != "nt":
+    if os.name != "nt" and sys.platform != "darwin":
         base["code"] = "not_windows"
         return base
     base["ok"] = True
@@ -619,7 +633,7 @@ def _under(path: str, root: str) -> bool:
     """``path`` 是否在 ``root`` 之下（含 root 自身）。"""
     p = os.path.normcase(os.path.normpath(path)).rstrip("\\/")
     r = os.path.normcase(os.path.normpath(root)).rstrip("\\/")
-    return p == r or p.startswith(r + "\\")
+    return p == r or p.startswith(r + "\\") or p.startswith(r + "/")
 
 
 def _prune_rels(rels) -> list[str]:
@@ -1050,13 +1064,16 @@ def _retarget_inner_links(
 
 
 def _create_junction(dest: str, link: str) -> None:
-    """在 ``link`` 处建指向 ``dest`` 的目录联接（junction）。
+    """在 ``link`` 处建指向 ``dest`` 的目录链接。
 
-    Windows 上用 ``_winapi.CreateJunction``（无管理员要求）；非 Windows
-    抛错，调用方按不支持处理。
+    macOS/POSIX 上创建符号链接；Windows 上用 ``_winapi.CreateJunction``。
     """
-    if os.name != "nt":
-        raise MigrateError("not_windows")
+    if sys.platform == "darwin" or os.name != "nt":
+        try:
+            os.symlink(dest, link, target_is_directory=True)
+            return
+        except OSError as exc:
+            raise MigrateError(f"junction:{exc}") from exc
     try:
         import _winapi
 
@@ -1413,7 +1430,13 @@ def remigrate_link(
         verify_at = time.time()
         _emit("switch", current="")
         try:
-            os.rmdir(link_path)
+            if os.path.islink(link_path):
+                os.unlink(link_path)
+            else:
+                try:
+                    os.rmdir(link_path)
+                except OSError:
+                    os.unlink(link_path)
         except OSError as exc:
             _rmtree(dst)
             raise MigrateError(f"unlink:{exc}") from exc
@@ -1585,7 +1608,13 @@ def restore_link(
             _rmtree(temp)
             raise MigrateError("verify")
         _record_verify(verify_out, "full")
-        os.rmdir(link)
+        if os.path.islink(link):
+            os.unlink(link)
+        else:
+            try:
+                os.rmdir(link)
+            except OSError:
+                os.unlink(link)
         _emit("restore", current="")
         try:
             os.rename(temp, link)

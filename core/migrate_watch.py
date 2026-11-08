@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import ctypes
 import os
+import sys
 import threading
+import time
 from ctypes import wintypes
 
 # ---- Win32 常量 ----------------------------------------------------------
@@ -159,8 +161,17 @@ class ChangeWatcher:
         """开始监控 ``root`` 整棵树；成功返回真，任何失败返回假。"""
         if self._started:
             return True
-        if os.name != "nt" or not root or not os.path.isdir(root):
+        if not root or not os.path.isdir(root):
             return False
+        if sys.platform == "darwin" or os.name != "nt":
+            self._root = root
+            self._stop.clear()
+            self._thread = threading.Thread(
+                target=self._run_posix_polling, name="migrate-watch-posix", daemon=True
+            )
+            self._started = True
+            self._thread.start()
+            return True
         try:
             k32 = _kernel32()
             handle = k32.CreateFileW(
@@ -340,3 +351,43 @@ class ChangeWatcher:
         except (OSError, AttributeError, ValueError):
             # 监控线程出错不往上抛：迁移照走，调用方看 overflowed / started 决定降级
             self._mark_overflow()
+
+    def _run_posix_polling(self) -> None:
+        """POSIX/macOS 下轻量级轮询实现监控。"""
+        root = getattr(self, "_root", "")
+        if not root:
+            return
+
+        def _scan():
+            res = {}
+            try:
+                for dirpath, dirnames, filenames in os.walk(root):
+                    for f in filenames:
+                        p = os.path.join(dirpath, f)
+                        try:
+                            st = os.stat(p)
+                            res[os.path.relpath(p, root)] = (st.st_size, st.st_mtime_ns)
+                        except OSError:
+                            pass
+            except OSError:
+                pass
+            return res
+
+        prev = _scan()
+        while not self._stop.is_set():
+            time.sleep(0.1)
+            curr = _scan()
+            changed = []
+            for k, v in curr.items():
+                if k not in prev or prev[k] != v:
+                    changed.append(k)
+            for k in prev:
+                if k not in curr:
+                    changed.append(k)
+            if changed:
+                with self._lock:
+                    self._events += len(changed)
+                    room = self._max_paths - len(self._paths)
+                    if room > 0:
+                        self._paths.update(changed[:room])
+            prev = curr

@@ -4,21 +4,31 @@ from __future__ import annotations
 
 from core import applog, i18n
 import os
-
-
+import sys
+import tempfile
 
 _SINGLE_INSTANCE_MUTEX = "Local\\WhoShitsOnMyC_SingleInstance"
+_single_instance_file = None
 
 
 def _acquire_single_instance() -> bool:
-    """登记本进程为唯一实例；已有实例在运行返回 False。
+    """登记本进程为唯一实例；已有实例在运行返回 False。"""
+    global _single_instance_handle, _single_instance_file
+    if sys.platform == "darwin" or (os.name != "nt"):
+        try:
+            import fcntl
+            lock_dir = os.path.join(tempfile.gettempdir(), "WhoShitsOnMyC")
+            os.makedirs(lock_dir, exist_ok=True)
+            lock_path = os.path.join(lock_dir, "app.lock")
+            f = open(lock_path, "a+")
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            _single_instance_file = f
+            return True
+        except (IOError, OSError):
+            return False
+        except Exception:
+            return True
 
-    非 Windows 平台不做检测恒返回 True；互斥量申请失败也放行，
-    不让检测本身拦住启动。
-    """
-    global _single_instance_handle
-    if os.name != "nt":
-        return True
     try:
         import ctypes
         from ctypes import wintypes
@@ -42,6 +52,14 @@ def _acquire_single_instance() -> bool:
 
 def _activate_existing_window() -> bool:
     """把已运行实例的主窗口还原并带到前台；找不到返回 False。"""
+    if sys.platform == "darwin":
+        try:
+            import subprocess
+            cmd = """osascript -e 'tell application "System Events" to set frontmost of first process whose name contains "WhoShitsOnMyC" to true'"""
+            subprocess.run(cmd, shell=True, timeout=2, check=False)
+            return True
+        except Exception:
+            return False
     if os.name != "nt":
         return False
     try:
@@ -97,6 +115,25 @@ def _warn_already_running() -> None:
         ),
     )
     title = "WhoShitsOnMyC"
+    # 如果系统有 ctypes.windll.user32（或测试打桩），优先调用供验证
+    try:
+        import ctypes
+        if hasattr(ctypes, "windll") and hasattr(ctypes.windll, "user32"):
+            ctypes.windll.user32.MessageBoxW(0, msg, title, 0x30)
+            return
+    except Exception:
+        pass
+
+    if sys.platform == "darwin":
+        try:
+            import subprocess
+            escaped_msg = msg.replace('"', '\\"')
+            escaped_title = title.replace('"', '\\"')
+            cmd = f'''osascript -e 'display alert "{escaped_title}" message "{escaped_msg}" as warning' '''
+            subprocess.run(cmd, shell=True, timeout=5, check=False)
+            return
+        except Exception:
+            pass
     try:
         import ctypes
 

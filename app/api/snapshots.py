@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 
 from core import applog, i18n, store, fs_delete
 from core.compress import CompressError
@@ -276,6 +277,37 @@ class SnapshotsMixin:
         """
         full = os.path.join(root, rel_path) if rel_path else root
         full = os.path.normpath(full)
+        if sys.platform == "darwin":
+            try:
+                if os.path.isdir(full):
+                    subprocess.Popen(["open", full])
+                    return {"ok": True}
+                if os.path.isfile(full) or os.path.exists(full):
+                    subprocess.Popen(["open", "-R", full])
+                    return {"ok": True}
+            except OSError as exc:
+                return {
+                    "error": i18n.t(
+                        f"无法打开：{full}\n{exc}",
+                        f"Cannot open: {full}\n{exc}",
+                    )
+                }
+            parent = os.path.dirname(full)
+            if parent and os.path.isdir(parent):
+                try:
+                    subprocess.Popen(["open", parent])
+                except OSError as exc:
+                    return {
+                        "error": i18n.t(
+                            f"无法打开：{parent}\n{exc}",
+                            f"Cannot open: {parent}\n{exc}",
+                        )
+                    }
+                return {"ok": True, "message": i18n.t(
+                    "该项已不存在，已打开其所在目录",
+                    "This item no longer exists; opened its parent folder instead")}
+            return {"error": i18n.t("路径不存在", "Path does not exist")}
+
         try:
             if os.path.isdir(full):
                 # 对比树多为目录；startfile 走 Shell 关联，空格路径可靠

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import stat
+import sys
 from collections.abc import Callable, Iterator
 
 
@@ -17,9 +18,15 @@ class MigrateError(Exception):
 
 
 def _is_reparse(path: str) -> bool:
-    """路径是否为重解析点（junction / 符号链接 / 其它）。"""
+    """路径是否为链接/重解析点（junction / 符号链接 / 其它）。"""
     try:
         st = os.lstat(_fs_path(path))
+        if stat.S_ISLNK(getattr(st, "st_mode", 0)):
+            return True
+        attrs = int(getattr(st, "st_file_attributes", 0))
+        reparse_flag = int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
+        if attrs & reparse_flag:
+            return True
         return int(getattr(st, "st_reparse_tag", 0) or 0) != 0
     except OSError:
         return False
@@ -157,12 +164,38 @@ def _same_path(a: str, b: str) -> bool:
 
 
 def _volume_fs(path: str) -> str:
-    """路径所在卷的文件系统名（NTFS、FAT32、exFAT 等），取不到返回空串。
-
-    迁移只允许同种文件系统之间进行。FAT32 与 exFAT 的修改时间精度（2 秒、
-    10 毫秒）比 NTFS 粗，复制回去的时间会被取整，校验必然不一致；这两种
-    文件系统也存不下目录联接与符号链接。
-    """
+    """路径所在卷的文件系统名（NTFS、APFS、HFS+、FAT32、exFAT 等），取不到返回空串。"""
+    if sys.platform == "darwin":
+        try:
+            import ctypes
+            class Statfs(ctypes.Structure):
+                _fields_ = [
+                    ("f_bsize", ctypes.c_uint32),
+                    ("f_iosize", ctypes.c_int32),
+                    ("f_blocks", ctypes.c_uint64),
+                    ("f_bfree", ctypes.c_uint64),
+                    ("f_bavail", ctypes.c_uint64),
+                    ("f_files", ctypes.c_uint64),
+                    ("f_ffree", ctypes.c_uint64),
+                    ("f_fsid", ctypes.c_uint64),
+                    ("f_owner", ctypes.c_uint32),
+                    ("f_type", ctypes.c_uint32),
+                    ("f_flags", ctypes.c_uint32),
+                    ("f_fssubtype", ctypes.c_uint32),
+                    ("f_fstypename", ctypes.c_char * 16),
+                    ("f_mntonname", ctypes.c_char * 1024),
+                    ("f_mntfromname", ctypes.c_char * 1024),
+                    ("f_reserved", ctypes.c_uint32 * 8),
+                ]
+            libc = ctypes.CDLL("libc.dylib")
+            s = Statfs()
+            norm = os.path.abspath(path)
+            res = libc.statfs(norm.encode("utf-8"), ctypes.byref(s))
+            if res == 0:
+                return s.f_fstypename.decode("utf-8", errors="ignore").strip().upper()
+        except Exception:
+            return ""
+        return ""
     if os.name != "nt":
         return ""
     try:
@@ -540,10 +573,13 @@ def _incurs_seek_penalty(device: str) -> bool:
 
 
 def _copy_workers(dest: str) -> int:
-    """复制并行线数：目标卷是 SSD 用 4 条，机械盘或探测不出用 1 条。
-
-    看目标卷而不是源卷：瓶颈在写入侧。
-    """
+    """复制并行线数：目标卷是 SSD 用 4 条，机械盘或探测不出用 1 条。"""
+    if sys.platform == "darwin":
+        # macOS（多数为内部/雷雳 SSD）默认支持 4 线程并行
+        device = _device_path(dest)
+        if _incurs_seek_penalty(device):
+            return _COPY_THREADS_HDD
+        return _COPY_THREADS_SSD
     if os.name != "nt":
         return _COPY_THREADS_HDD
     device = _device_path(dest)

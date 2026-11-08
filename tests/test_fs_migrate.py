@@ -10,6 +10,7 @@ import pytest
 
 from core.fs_migrate import (
     MigrateError,
+    _create_junction,
     migrate_directory,
     record_history,
     load_history,
@@ -435,7 +436,10 @@ def test_validate_remigrate_codes(monkeypatch, tmp_path):
     assert fm.validate_remigrate(src, first)["code"] == "same_path"
     os.makedirs(os.path.join(tmp_path, "taken"), exist_ok=True)
     assert fm.validate_remigrate(src, os.path.join(tmp_path, "taken"))["code"] == "dest_exists"
-    drive = os.path.splitdrive(os.path.abspath(str(tmp_path)))[0] + "\\"
+    if os.name == "nt":
+        drive = os.path.splitdrive(os.path.abspath(str(tmp_path)))[0] + "\\"
+    else:
+        drive = "/"
     assert fm.validate_remigrate(src, drive)["code"] == "drive_root"
     # 新目标塞在旧目标里，或塞在链接路径里（后者会直接写回旧目标）
     assert fm.validate_remigrate(src, os.path.join(first, "inner"))["code"] == "inside_each"
@@ -486,15 +490,13 @@ def test_remove_link_record(monkeypatch, tmp_path):
 
 def test_delete_junction_only_removes_link(monkeypatch, tmp_path):
     """删除链接只删 junction，目标数据保留；非链接路径拒绝。"""
-    import _winapi
-
     fm = _registry_isolated(monkeypatch, tmp_path)
     real = os.path.join(tmp_path, "real")
     link = os.path.join(tmp_path, "link")
     os.makedirs(os.path.join(real, "sub"))
     open(os.path.join(real, "a.txt"), "wb").write(b"x")
     try:
-        _winapi.CreateJunction(real, link)
+        _create_junction(real, link)
     except (OSError, ValueError) as exc:
         pytest.skip(f"Cannot create junction: {exc}")
 
@@ -510,8 +512,6 @@ def test_delete_junction_only_removes_link(monkeypatch, tmp_path):
 
 def test_restore_link_copies_back_and_recycles_backup(monkeypatch, tmp_path):
     """还原：目标复制回原路径、删除链接、备份与目标一起移入回收站。"""
-    import _winapi
-
     fm = _registry_isolated(monkeypatch, tmp_path)
     # 备份/目标回收站用桩，避免真进回收站
     recycled = []
@@ -524,7 +524,7 @@ def test_restore_link_copies_back_and_recycles_backup(monkeypatch, tmp_path):
     open(os.path.join(target, "a.txt"), "wb").write(b"data")
     os.makedirs(backup)
     open(os.path.join(backup, "old.txt"), "wb").write(b"old")
-    _winapi.CreateJunction(target, link)
+    _create_junction(target, link)
 
     fm.register_link(link, target, backup, files=1, bytes_=4)
     result = fm.restore_link(link)
@@ -542,8 +542,6 @@ def test_restore_link_copies_back_and_recycles_backup(monkeypatch, tmp_path):
 
 
 def test_restore_link_permanent_backup(monkeypatch, tmp_path):
-    import _winapi
-
     fm = _registry_isolated(monkeypatch, tmp_path)
     # 回收站与彻底删除都用桩，避免真删磁盘
     recycled, wiped = [], []
@@ -556,7 +554,7 @@ def test_restore_link_permanent_backup(monkeypatch, tmp_path):
     os.makedirs(os.path.join(target, "sub"))
     open(os.path.join(target, "a.txt"), "wb").write(b"data")
     os.makedirs(backup)
-    _winapi.CreateJunction(target, link)
+    _create_junction(target, link)
 
     fm.register_link(link, target, backup, files=1, bytes_=4)
     result = fm.restore_link(link, permanent=True)
@@ -581,10 +579,11 @@ def test_restore_link_refuses_when_target_missing(monkeypatch, tmp_path):
 
 
 def test_validate_migrate_not_windows(tmp_path, monkeypatch):
-    """非 Windows：其余校验都通过后，明确拒绝（不再等复制完才在 junction 报）。"""
+    """非 Windows/macOS（如 Linux）：其余校验都通过后，明确拒绝。"""
     src = _tree(tmp_path, {"a.txt": 5})
     dest = os.path.join(tmp_path, "dest", "root")
     monkeypatch.setattr(os, "name", "posix")
+    monkeypatch.setattr("sys.platform", "linux")
     r = validate_migrate(src, dest)
     assert r["code"] == "not_windows"
 
@@ -613,6 +612,7 @@ def test_volume_fs_reads_real_drive(tmp_path):
     assert fm._volume_fs(str(tmp_path))
 
 
+@pytest.mark.skipif(os.name != "nt", reason="\\?\\ 扩展路径仅 Windows")
 def test_fs_path_keeps_trailing_space(tmp_path):
     """超长路径转 \\?\\ 时保住结尾的空格：normpath 会吃掉它。"""
     import core.fs_migrate as fm
@@ -838,8 +838,6 @@ def test_migrate_backup_keep_is_default(tmp_path, monkeypatch):
 
 def test_restore_link_reports_progress(monkeypatch, tmp_path):
     """还原：进度回调收到 copy 阶段的字节载荷（大目录不再静默假死）。"""
-    import _winapi
-
     fm = _registry_isolated(monkeypatch, tmp_path)
     monkeypatch.setattr(fm.fs_delete, "delete_to_recycle", lambda p: None)
 
@@ -849,7 +847,7 @@ def test_restore_link_reports_progress(monkeypatch, tmp_path):
     os.makedirs(os.path.join(target, "sub"))
     open(os.path.join(target, "a.txt"), "wb").write(b"data")
     os.makedirs(backup)
-    _winapi.CreateJunction(target, link)
+    _create_junction(target, link)
     fm.register_link(link, target, backup, files=1, bytes_=4)
 
     payloads = []

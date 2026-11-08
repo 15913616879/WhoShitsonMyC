@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import re
 import stat
+import sys
 import time
 from typing import Any
 
@@ -443,16 +444,29 @@ def _recycle_unavailable_reason(abs_path: str) -> str:
 
 
 def delete_to_recycle(abs_path: str) -> None:
-    """移到回收站（Windows SHFileOperation）；失败抛 DeleteError，不降级永久删。
-
-    调用 Shell 之前先确认该位置真的会把文件放进回收站。放在 SHFileOperation
-    里没法得知结果：这些位置上传回值仍是成功，文件却已经永久删掉。
-    """
+    """移到回收站/废纸篓；失败抛 DeleteError，不降级永久删。"""
     path = normalize_abs(abs_path)
     if not path:
         raise DeleteError("invalid")
+    if sys.platform == "darwin":
+        import subprocess
+        try:
+            abs_norm = os.path.abspath(path)
+            if not os.path.exists(abs_norm) and not os.path.islink(abs_norm):
+                raise DeleteError("not_found")
+            # AppleScript Finder delete 会将文件/目录送进废纸篓并支持放回原处
+            escaped = abs_norm.replace('\\', '\\\\').replace('"', '\\"')
+            script = f'tell application "Finder" to delete POSIX file "{escaped}"'
+            r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=10)
+            if r.returncode != 0:
+                raise DeleteError("recycle_failed")
+            return
+        except DeleteError:
+            raise
+        except Exception as exc:
+            raise DeleteError("recycle_failed") from exc
     if os.name != "nt":
-        # 非 Windows：无系统回收站封装时明确失败，避免静默永久删
+        # 非 Windows/macOS：无系统回收站封装时明确失败，避免静默永久删
         raise DeleteError("recycle_unsupported")
     if _recycle_unavailable_reason(path):
         raise DeleteError("recycle_unavailable")

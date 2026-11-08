@@ -719,12 +719,12 @@ def test_links_to_relative_target_resolved(tmp_path):
     res = _links_to(
         tmp_path, ["real", "sub"],
         [
-            ("sub\\link", "..\\real", REPARSE_TAG_SYMLINK),
-            ("sub\\out", "..\\..\\real", REPARSE_TAG_SYMLINK),
+            (os.path.join("sub", "link"), "..\\real", REPARSE_TAG_SYMLINK),
+            (os.path.join("sub", "out"), "..\\..\\real", REPARSE_TAG_SYMLINK),
         ],
         "real",
     )
-    assert [it["path"] for it in res["links"]] == ["sub\\link"]
+    assert [it["path"].replace("/", "\\") for it in res["links"]] == ["sub\\link"]
     assert res["unresolved_total"] == 0
 
 

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 import threading
 
 from core import applog, i18n, store
@@ -509,7 +511,12 @@ class SettingsMixin:
                 "This folder cannot be used because the system refused access to that location; choose another folder the current account can write to.",
             )}
         try:
-            os.startfile(path)  # noqa: S606 - 打开的是自己管理的目录
+            if sys.platform == "darwin":
+                subprocess.Popen(["open", path])
+            elif hasattr(os, "startfile"):
+                os.startfile(path)  # noqa: S606 - 打开的是自己管理的目录
+            else:
+                subprocess.Popen(["xdg-open", path])
         except OSError:
             return {"error": i18n.t(
                 "无法打开快照存放目录，请确认该文件夹仍然存在后重试。",

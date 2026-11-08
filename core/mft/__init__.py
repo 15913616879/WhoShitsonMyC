@@ -16,7 +16,19 @@
 
 from __future__ import annotations
 
-from .scan import MftUnavailable, is_mft_eligible, scan_mft_to_snapshot
+import os
+
+if os.name == "nt":
+    from .scan import MftUnavailable, is_mft_eligible, scan_mft_to_snapshot
+else:
+    class MftUnavailable(RuntimeError):
+        pass
+
+    def is_mft_eligible(root: str) -> bool:
+        return False
+
+    def scan_mft_to_snapshot(*args, **kwargs):
+        raise MftUnavailable("MFT is only supported on Windows NTFS")
 
 __all__ = [
     "MftUnavailable",

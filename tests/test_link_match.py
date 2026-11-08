@@ -56,7 +56,7 @@ def test_link_hit_reports_absolute_path():
         "C:\\real",
     )
     assert hit == {
-        "path": os.path.join("C:\\", "link"),
+        "path": abs_under_root("C:\\", "link"),
         "kind": "junction",
         "target": "C:\\real",
     }

@@ -24,6 +24,8 @@ import itertools
 import os
 import shutil
 import stat
+import sys
+import ctypes
 import queue
 import re
 import threading
@@ -97,13 +99,75 @@ def _long_path(path: str) -> str:
     return "\\\\?\\" + norm
 
 
-def _reparse_tag(stat) -> int:
+_REMOTE_FS_TYPES = {
+    "smbfs",
+    "nfs",
+    "afpfs",
+    "cifs",
+    "webdav",
+    "fuse",
+    "osxfuse",
+    "macfuse",
+    "sshfs",
+}
+
+if sys.platform == "darwin":
+    class _StatFS(ctypes.Structure):
+        _fields_ = [
+            ("f_bsize", ctypes.c_uint32),
+            ("f_iosize", ctypes.c_int32),
+            ("f_blocks", ctypes.c_uint64),
+            ("f_bfree", ctypes.c_uint64),
+            ("f_bavail", ctypes.c_uint64),
+            ("f_files", ctypes.c_uint64),
+            ("f_ffree", ctypes.c_uint64),
+            ("f_fsid", ctypes.c_int32 * 2),
+            ("f_owner", ctypes.c_uint32),
+            ("f_type", ctypes.c_uint32),
+            ("f_flags", ctypes.c_uint32),
+            ("f_fssubtype", ctypes.c_uint32),
+            ("f_fstypename", ctypes.c_char * 16),
+            ("f_mntonname", ctypes.c_char * 1024),
+            ("f_mntfromname", ctypes.c_char * 1024),
+        ]
+
+    try:
+        _libc_statfs = ctypes.CDLL("libc.dylib").statfs
+    except Exception:
+        _libc_statfs = None
+else:
+    _libc_statfs = None
+
+
+def _is_remote_mount(path: str) -> bool:
+    """在 macOS 上探测指定挂载路径是否为远程/网络文件系统（如 SMB/NAS、NFS、AFP）。"""
+    if _libc_statfs is not None:
+        try:
+            buf = _StatFS()
+            if _libc_statfs(path.encode("utf-8", "surrogateescape"), ctypes.byref(buf)) == 0:
+                # MNT_LOCAL = 0x00001000：标志位未置位表示非本地文件系统（网络挂载）
+                if not (buf.f_flags & 0x00001000):
+                    return True
+                fstype = buf.f_fstypename.decode("utf-8", "replace").rstrip("\x00").lower()
+                if fstype in _REMOTE_FS_TYPES:
+                    return True
+        except Exception:
+            pass
+    return False
+
+
+def _reparse_tag(stat_obj) -> int:
     """取一个目录项的重解析点标签（Windows ``st_reparse_tag``）；非链接为 0。
 
     0xA0000003=junction（mklink /J），0xA000000C=符号链接（mklink /D），
-    其它非零=其它重解析点。非 Windows / 无该字段时返回 0。
+    其它非零=其它重解析点。非 Windows 下检测到 S_ISLNK 时赋予 0xA000000C 符号链接标签。
     """
-    return int(getattr(stat, "st_reparse_tag", 0) or 0)
+    if os.name == "nt":
+        return int(getattr(stat_obj, "st_reparse_tag", 0) or 0)
+    mode = getattr(stat_obj, "st_mode", 0)
+    if stat.S_ISLNK(mode):
+        return 0xA000000C
+    return 0
 
 
 def _is_reparse_point(stat) -> bool:
@@ -202,6 +266,11 @@ class _Scan:
         # worker 侧已发现的文件数（枚举完成即计，不依赖写库速度）
         self._found_lock = threading.Lock()
         self.files_found = 0
+        try:
+            self.root_dev = os.stat(meta.root).st_dev
+        except OSError:
+            self.root_dev = None
+        self.is_root_scan = (os.path.abspath(meta.root) == "/")
 
     # ---- worker 侧 ------------------------------------------------------
 
@@ -255,11 +324,52 @@ class _Scan:
                     st = entry.stat(follow_symlinks=False)
                     tag = _reparse_tag(st)
                     # 目录判定：S_ISDIR 之外再认 FILE_ATTRIBUTE_DIRECTORY。
-                    # 目录符号链接（mklink /D）的 lstat 上 S_ISDIR 为 False，
+                    # 目录符号链接（mklink /D 或 POSIX 软链接目录）的 lstat 上 S_ISDIR 为 False，
                     # 但属性位正确；只认 S_ISDIR 会把目录链接记成文件。
                     attrs = int(getattr(st, "st_file_attributes", 0))
+                    is_symlink = stat.S_ISLNK(st.st_mode)
                     is_dir = stat.S_ISDIR(st.st_mode) or bool(attrs & 0x10)
+                    if not is_dir and is_symlink:
+                        try:
+                            target_st = os.stat(entry.path)
+                            if stat.S_ISDIR(target_st.st_mode):
+                                is_dir = True
+                        except OSError:
+                            pass
+
                     descend = is_dir and (self.follow or not tag)
+
+                    # macOS 平台挂载点与 NAS/网络卷隔离保护：
+                    if descend and sys.platform == "darwin":
+                        entry_path = entry.path
+                        # 1. 根目录扫描时，排除系统设备目录（/dev、/.vol）
+                        if node.abspath == "/" and entry.name in {".vol", "dev"}:
+                            descend = False
+                            tag = tag or 0xA0000003
+                        # 2. 根目录扫描时，排除 /Volumes 下的外部挂载点（NAS、移动硬盘、U盘等）
+                        elif self.is_root_scan and (
+                            node.abspath == "/Volumes"
+                            or node.abspath.startswith("/Volumes/")
+                            or node.rel == "Volumes"
+                            or node.rel.startswith("Volumes" + os.sep)
+                        ):
+                            entry_dev = getattr(st, "st_dev", None)
+                            if (
+                                os.path.ismount(entry_path)
+                                or (self.root_dev is not None and entry_dev is not None and entry_dev != self.root_dev)
+                                or _is_remote_mount(entry_path)
+                            ):
+                                descend = False
+                                tag = tag or 0xA0000003
+                        # 3. 任何扫描中，若子目录是挂载点且为网络文件系统（NAS/SMB/NFS/AFP）：
+                        #    只要扫描根不是该网络挂载点本身，坚决不深入网络扫描！
+                        elif os.path.ismount(entry_path) and entry_path != self.meta.root:
+                            entry_dev = getattr(st, "st_dev", None)
+                            if _is_remote_mount(entry_path) or (
+                                self.root_dev is not None and entry_dev is not None and entry_dev != self.root_dev
+                            ):
+                                descend = False
+                                tag = tag or 0xA0000003
                 except OSError:
                     descend = False
                     is_dir = False
@@ -513,7 +623,7 @@ def scan_to_snapshot(
     if not follow_symlinks:
         try:
             from .mft import MftUnavailable, is_mft_eligible, scan_mft_to_snapshot
-        except ImportError:
+        except (ImportError, AttributeError):
             is_mft_eligible = None  # type: ignore[assignment]
         else:
             if is_mft_eligible(root):

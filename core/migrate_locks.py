@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import sys
 from ctypes import wintypes
 
 # 会话键缓冲：文档要求 CCH_RM_SESSION_KEY + 1 个字符。
@@ -111,6 +112,30 @@ def find_holders(paths) -> list[dict]:
 
     同一个进程只出现一次。拿不到结果（不支持、权限不足、调用失败）返回空表。
     """
+    if sys.platform == "darwin":
+        import subprocess
+        files = _clean_paths(paths)
+        if not files:
+            return []
+        try:
+            # 使用 lsof 快速检查
+            cmd = ["lsof", "-Fpcn"] + files[:10]
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=1.5)
+            out: list[dict] = []
+            seen_pids = set()
+            cur_pid = 0
+            cur_name = ""
+            for line in res.stdout.splitlines():
+                if line.startswith("p"):
+                    cur_pid = int(line[1:])
+                elif line.startswith("c"):
+                    cur_name = line[1:]
+                    if cur_pid and cur_pid not in seen_pids:
+                        seen_pids.add(cur_pid)
+                        out.append({"pid": cur_pid, "name": cur_name})
+            return out
+        except Exception:
+            return []
     if os.name != "nt":
         return []
     files = _clean_paths(paths)

@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import threading
 import time
 
@@ -21,12 +22,20 @@ _DRIVE_FIXED = 3
 
 
 def fixed_drives() -> list[str]:
-    """本机固定磁盘的根路径，如 ``["C:\\\\", "F:\\\\"]``。
-
-    只认 ``DRIVE_FIXED``（内置硬盘与固态盘）。U 盘、移动硬盘、网络盘、
-    光驱都不在内：这些盘可能在扫描途中被拔掉或断开，扫到一半消失只会让
-    查询失败，用户也不该在这里选到它们。非 Windows 返回空表。
-    """
+    """本机固定磁盘/卷的根路径。"""
+    if sys.platform == "darwin":
+        out = ["/"]
+        if os.path.exists("/Volumes"):
+            try:
+                for entry in sorted(os.listdir("/Volumes")):
+                    if entry.startswith("."):
+                        continue
+                    p = os.path.join("/Volumes", entry)
+                    if os.path.isdir(p) and not os.path.islink(p):
+                        out.append(p)
+            except OSError:
+                pass
+        return out
     if os.name != "nt":
         return []
     try:

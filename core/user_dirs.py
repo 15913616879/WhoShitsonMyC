@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import sys
 from ctypes import wintypes
 
 
@@ -119,6 +120,9 @@ def _local_app_data(home: str) -> str:
         if not local and home:
             local = os.path.join(home, "AppData", "Local")
         return local
+    if sys.platform == "darwin":
+        if home:
+            return os.path.join(home, "Library", "Application Support")
     local = _env_path("XDG_DATA_HOME")
     if not local and home:
         local = os.path.join(home, ".local", "share")

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 import threading
 
 from core import applog, i18n, store, fs_migrate, wingeom
@@ -88,7 +90,12 @@ class WindowMixin:
         ):
             return {"error": i18n.t("无效的链接", "Invalid URL")}
         try:
-            os.startfile(url)  # noqa: S606 - 仅打开经校验的 http(s) URL
+            if sys.platform == "darwin":
+                subprocess.Popen(["open", url])
+            elif hasattr(os, "startfile"):
+                os.startfile(url)  # noqa: S606 - 仅打开经校验的 http(s) URL
+            else:
+                subprocess.Popen(["xdg-open", url])
         except OSError as exc:
             return {"error": i18n.t(
                 f"无法打开链接（{exc}）",
@@ -101,7 +108,12 @@ class WindowMixin:
         if not p or not os.path.isdir(p):
             return {"error": i18n.t("目录不存在", "Folder does not exist")}
         try:
-            os.startfile(p)  # noqa: S606
+            if sys.platform == "darwin":
+                subprocess.Popen(["open", p])
+            elif hasattr(os, "startfile"):
+                os.startfile(p)  # noqa: S606
+            else:
+                subprocess.Popen(["xdg-open", p])
         except OSError as exc:
             return {
                 "error": i18n.t(f"无法打开：{exc}", f"Cannot open: {exc}"),

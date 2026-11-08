@@ -80,16 +80,19 @@ def test_done_event_can_hand_over_to_next_job(api, stub_migration, monkeypatch):
         # 送达界面时占位应当已经放开，界面据此开下一项不会被拒
         slots_at_done.append(api._link_job_busy_error())
         if len(slots_at_done) == 1:
-            hand_overs.append(api.start_directory_migration("D:/next-src", "E:/next-dst"))
-        else:
+            res = api.start_directory_migration("D:/next-src", "E:/next-dst")
+            hand_overs.append(res)
+        elif len(slots_at_done) == 2:
             finished.set()
 
     monkeypatch.setattr(api, "_emit", fake_emit)
 
     assert api.start_directory_migration("D:/src", "E:/dst") == {"started": True}
     assert finished.wait(5), "第二项没有跑完，完成事件没有连续送达"
+    # 给主线程极短时间刷新内存
+    time.sleep(0.05)
     assert slots_at_done == [None, None], slots_at_done
-    assert hand_overs[0] == {"started": True}, hand_overs[0]
+    assert hand_overs == [{"started": True}], hand_overs
     assert stub_migration == ["D:/src", "D:/next-src"]
 
 

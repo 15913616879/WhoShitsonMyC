@@ -44,6 +44,15 @@ IMPLICIT_NAMES = {
 ATTRIBUTE_ALLOWLIST = {
     # POSIX 专有，Windows 上 os 模块没有这个属性，代码里按 os.name 分支调用。
     "os.sysconf",
+    # Windows 专有属性，非 Windows 平台上 os/ctypes/sys 不具备
+    "os.startfile",
+    "ctypes.windll",
+    "ctypes.WinDLL",
+    "ctypes.WINFUNCTYPE",
+    "ctypes.get_last_error",
+    "ctypes.set_last_error",
+    "ctypes.FormatError",
+    "sys.getwindowsversion",
     # pythonnet 的 .NET 命名空间对象，属性由 CLR 运行时解析，静态看不见。
     "WinForms",
 }

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import stat
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -372,6 +373,12 @@ def test_delete_to_recycle_blocks_nuke_on_delete(monkeypatch):
 
 
 def test_delete_to_recycle_mocked(monkeypatch):
+    if sys.platform == "darwin":
+        # macOS 支持原生废纸篓删除，非存在路径报 not_found
+        with pytest.raises(fs_delete.DeleteError) as ei:
+            fs_delete.delete_to_recycle("/tmp/non_existent_file_test_xyz")
+        assert ei.value.message == "not_found"
+        return
     if os.name != "nt":
         with pytest.raises(fs_delete.DeleteError) as ei:
             fs_delete.delete_to_recycle("C:\\tmp\\x")

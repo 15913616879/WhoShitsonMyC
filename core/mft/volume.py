@@ -22,21 +22,22 @@ FILE_BEGIN = 0
 # 可选：绕过系统缓存（需对齐）；默认不用，兼容性优先
 FILE_FLAG_NO_BUFFERING = 0x20000000
 
-kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-kernel32.CreateFileW.restype = wintypes.HANDLE
-kernel32.ReadFile.argtypes = [
-    wintypes.HANDLE,
-    wintypes.LPVOID,
-    wintypes.DWORD,
-    ctypes.POINTER(wintypes.DWORD),
-    wintypes.LPVOID,
-]
-kernel32.SetFilePointerEx.argtypes = [
-    wintypes.HANDLE,
-    ctypes.c_int64,
-    ctypes.POINTER(ctypes.c_int64),
-    wintypes.DWORD,
-]
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True) if os.name == "nt" else None
+if kernel32 is not None:
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.ReadFile.argtypes = [
+        wintypes.HANDLE,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+        wintypes.LPVOID,
+    ]
+    kernel32.SetFilePointerEx.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int64,
+        ctypes.POINTER(ctypes.c_int64),
+        wintypes.DWORD,
+    ]
 
 # 大 run 切段并发读：NVMe 吃队列深度
 _READ_SEGMENT = 16 * 1024 * 1024  # 16 MiB

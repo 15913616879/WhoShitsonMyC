@@ -373,12 +373,18 @@ def link_records() -> list[dict]:
 
 
 def delete_junction(link: str) -> str:
-    """删除目录联接本身（数据留在目标）。仅当路径当前确为重解析点才删。"""
+    """删除目录链接本身（数据留在目标）。仅当路径当前确为链接才删。"""
     link = normalize_abs(link)
     if not link or not _is_reparse(link):
         raise MigrateError("not_a_link")
     try:
-        os.rmdir(link)
+        if os.path.islink(link):
+            os.unlink(link)
+        else:
+            try:
+                os.rmdir(link)
+            except OSError:
+                os.unlink(link)
     except OSError as exc:
         raise MigrateError(f"unlink:{exc}") from exc
     return link

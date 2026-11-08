@@ -99,13 +99,12 @@ cur.execute(
 cur.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
 conn.commit()
 
-next_id = 1
+next_id = 2
 root_id = 1
-next_id += 1
 
 dir_stack = [(root_id, target_root)]
-# 记录目录节点 (id, parent_id, name, path, mtime) 用于反向拓扑聚合成完整目录大小
-dir_nodes = [(root_id, None, os.path.basename(target_root) or target_root, target_root, 0)]
+# 极简轻量结构: (id, parent_id, name, mtime)
+dir_nodes = [(root_id, None, os.path.basename(target_root) or target_root, 0)]
 dir_sizes = {root_id: 0}
 
 file_count = 0
@@ -113,36 +112,55 @@ total_size = 0
 last_progress = time.time()
 batch_files = []
 
+# 跳过群晖专属缓存与无用系统缩略图碎片目录
+SKIPPED_NAMES = frozenset({"@eaDir", "@synoEA", ".DS_Store", "._DAV", "@tmp"})
+
+def safe_str(s):
+    try:
+        return s.encode("utf-8", "surrogateescape").decode("utf-8", "replace")
+    except Exception:
+        return str(s)
+
 def flush_files():
-    if batch_files:
+    global batch_files
+    if not batch_files:
+        return
+    chunk = batch_files
+    batch_files = []
+    try:
         cur.executemany(
-            "INSERT INTO entries VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            batch_files
+            "INSERT OR REPLACE INTO entries (id, parent_id, name, size, is_dir, mtime, reparse_tag, link_target) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            chunk
         )
-        batch_files.clear()
+    except Exception:
+        pass
 
 while dir_stack:
     p_id, cur_path = dir_stack.pop()
     try:
         with os.scandir(cur_path) as it:
             for entry in it:
+                raw_name = entry.name
+                if raw_name in SKIPPED_NAMES:
+                    continue
+                name = safe_str(raw_name)
                 try:
                     if entry.is_symlink():
                         cur_id = next_id
                         next_id += 1
                         file_count += 1
                         try:
-                            link_tgt = os.readlink(entry.path)
+                            link_tgt = safe_str(os.readlink(entry.path))
                         except Exception:
                             link_tgt = ""
-                        batch_files.append((cur_id, p_id, entry.name, 0, 0, 0, 0xA000000C, link_tgt))
+                        batch_files.append((cur_id, p_id, name, 0, 0, 0, 0xA000000C, link_tgt))
                         continue
                     
                     if entry.is_dir(follow_symlinks=False):
                         cur_id = next_id
                         next_id += 1
                         dir_sizes[cur_id] = 0
-                        dir_nodes.append((cur_id, p_id, entry.name, entry.path, 0))
+                        dir_nodes.append((cur_id, p_id, name, 0))
                         dir_stack.append((cur_id, entry.path))
                     else:
                         cur_id = next_id
@@ -150,12 +168,12 @@ while dir_stack:
                         st = entry.stat(follow_symlinks=False)
                         sz = st.st_size
                         mt = int(st.st_mtime)
-                        batch_files.append((cur_id, p_id, entry.name, sz, 0, mt, 0, ""))
+                        batch_files.append((cur_id, p_id, name, sz, 0, mt, 0, ""))
                         dir_sizes[p_id] += sz
                         total_size += sz
                         file_count += 1
                         
-                        if len(batch_files) >= 10000:
+                        if len(batch_files) >= 5000:
                             flush_files()
                 except Exception:
                     pass
@@ -163,7 +181,7 @@ while dir_stack:
         pass
 
     now = time.time()
-    if now - last_progress >= 0.22:
+    if now - last_progress >= 0.15:
         sys.stdout.write(json.dumps({"files": file_count, "current": cur_path}) + "\\n")
         sys.stdout.flush()
         last_progress = now
@@ -171,15 +189,21 @@ while dir_stack:
 flush_files()
 
 # 自底向上聚合目录大小
-for cur_id, p_id, name, path, mt in reversed(dir_nodes):
-    sub_size = dir_sizes[cur_id]
-    if p_id is not None:
+for cur_id, p_id, name, mt in reversed(dir_nodes):
+    sub_size = dir_sizes.get(cur_id, 0)
+    if p_id is not None and p_id in dir_sizes:
         dir_sizes[p_id] += sub_size
 
 dir_rows = []
-for cur_id, p_id, name, path, mt in dir_nodes:
-    dir_rows.append((cur_id, p_id, name, dir_sizes[cur_id], 1, mt, 0, ""))
-cur.executemany("INSERT INTO entries VALUES (?, ?, ?, ?, ?, ?, ?, ?)", dir_rows)
+for cur_id, p_id, name, mt in dir_nodes:
+    dir_rows.append((cur_id, p_id, name, dir_sizes.get(cur_id, 0), 1, mt, 0, ""))
+try:
+    cur.executemany(
+        "INSERT OR REPLACE INTO entries (id, parent_id, name, size, is_dir, mtime, reparse_tag, link_target) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        dir_rows
+    )
+except Exception:
+    pass
 
 cur.execute("CREATE INDEX IF NOT EXISTS idx_entries_parent ON entries(parent_id)")
 cur.execute("CREATE INDEX IF NOT EXISTS idx_entries_link ON entries(reparse_tag, link_target) WHERE reparse_tag <> 0")
@@ -208,7 +232,7 @@ meta_rows = [
     ("ssh_user", user),
     ("compressed", "0"),
 ]
-cur.executemany("INSERT INTO meta VALUES (?, ?)", meta_rows)
+cur.executemany("INSERT OR REPLACE INTO meta VALUES (?, ?)", meta_rows)
 conn.commit()
 conn.close()
 
@@ -312,7 +336,7 @@ def execute_remote_scan(
 
     remote_tmp_db = f"/tmp/wsmc_scan_{int(time.time())}_{os.getpid()}.db"
     run_cmd = (
-        f'python3 -c "import base64; exec(base64.b64decode(\'{b64_script}\').decode(\'utf-8\'))" '
+        f'python3 -u -c "import base64; exec(base64.b64decode(\'{b64_script}\').decode(\'utf-8\'))" '
         f'"{clean_root}" "{remote_tmp_db}" "{host}" "{port}" "{user}"'
     )
 

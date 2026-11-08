@@ -407,5 +407,15 @@ def test_sparse_file_allocated_size(make_tree, tmp_path, snapshot_map, monkeypat
     assert meta.total_size == 2048
 
 
+def test_query_free_size_mac_native():
+    """测试 query_free_size 在当前环境能正确返回正数剩余空间。"""
+    from core.scanner import query_free_size
+    free = query_free_size("/")
+    assert free > 0
+    # 在本 Mac 上容量应大于 10GB
+    assert free > 10 * (1024 ** 3)
+
+
+
 
 

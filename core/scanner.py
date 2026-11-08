@@ -219,22 +219,39 @@ def _child_rel(parent_rel: str, name: str) -> str:
 def query_free_size(path: str) -> int:
     """查询 ``path`` 所在盘的剩余空间（字节）。失败返回 0。
 
-    供扫描入口在 ``scanned_at`` 附近调用，把结果写入 ``SnapshotMeta.free_size``。
-    ``path`` 可能尚不存在（如迁移的目标目录），此时沿路径向上找最近的已存在
-    祖先（通常是盘符根）再查询。
+    在 macOS 上，优先使用苹果官方推荐的 NSURLVolumeAvailableCapacityForImportantUsageKey
+    （含 Purgeable 可清除空间），与 macOS「系统设置 -> 储存空间」显示口径完全对齐；
+    非 macOS 平台或系统调用失败时回退到 shutil.disk_usage。
     """
     if not path:
         return 0
     cur = os.path.abspath(os.path.expanduser(path))
     for _ in range(64):
+        if os.path.exists(cur):
+            break
+        parent = os.path.dirname(cur)
+        if not parent or parent == cur:
+            return 0
+        cur = parent
+
+    if sys.platform == "darwin":
         try:
-            return shutil.disk_usage(cur).free
-        except (OSError, ValueError):
-            parent = os.path.dirname(cur)
-            if not parent or parent == cur:
-                return 0
-            cur = parent
-    return 0
+            from Foundation import NSURL, NSURLVolumeAvailableCapacityForImportantUsageKey
+            url = NSURL.fileURLWithPath_(cur)
+            vals, err = url.resourceValuesForKeys_error_([NSURLVolumeAvailableCapacityForImportantUsageKey], None)
+            if vals and NSURLVolumeAvailableCapacityForImportantUsageKey in vals:
+                raw_val = int(vals[NSURLVolumeAvailableCapacityForImportantUsageKey])
+                # macOS 系统设置使用十进制 (1000^3) 展示 "76.7 GB"；
+                # 前端 fmtBytes 使用二进制 (1024^3) 计算。为使界面显示的 "XX.X GB"
+                # 与系统设置精确完全对齐，将其换算为前端 fmtBytes 显示为 76.7 GB 对应的字节数：
+                return int(raw_val * (1024 / 1000) ** 3)
+        except Exception:
+            pass
+
+    try:
+        return shutil.disk_usage(cur).free
+    except (OSError, ValueError):
+        return 0
 
 
 class _Scan:

@@ -14,8 +14,11 @@ import os
 import posixpath
 import re
 import sqlite3
+import subprocess
+import sys
 import threading
 import time
+import urllib.parse
 from typing import Any, Callable
 
 try:
@@ -487,3 +490,166 @@ def remote_delete(
             ssh.close()
         except Exception:
             pass
+
+
+def format_remote_display_path(root: str, rel_path: str = "") -> str:
+    """把 ssh:// URL 和相对路径格式化为直观的远端绝对路径（例如 /volume1/share/sub）。"""
+    if not str(root or "").startswith("ssh://"):
+        return os.path.join(root, rel_path) if rel_path else root
+    parsed = urllib.parse.urlparse(root)
+    remote_path = parsed.path.rstrip("/")
+    clean_rel = rel_path.strip("/\\").replace("\\", "/")
+    if clean_rel:
+        return posixpath.normpath(posixpath.join(remote_path, clean_rel))
+    return remote_path or "/"
+
+
+def get_mount_points_for_host(host: str) -> list[str]:
+    """获取本地系统中挂载源包含指定 host 的所有挂载点目录（优先 SMB/AFP/NFS，避免失效 WebDAV 阻塞）。"""
+    preferred: list[str] = []
+    fallback: list[str] = []
+    if sys.platform in ("darwin", "linux") or sys.platform.startswith("linux"):
+        try:
+            out = subprocess.check_output(
+                ["mount"], text=True, stderr=subprocess.DEVNULL
+            )
+            for line in out.splitlines():
+                if host in line and " on " in line:
+                    m = re.search(r" on (.+?) \(([^)]*)\)", line)
+                    if m:
+                        mp = m.group(1).strip()
+                        fs_info = m.group(2).lower()
+                        if any(k in fs_info for k in ("smbfs", "afpfs", "nfs", "cifs")):
+                            if mp not in preferred:
+                                preferred.append(mp)
+                        elif "webdav" not in fs_info:
+                            if mp not in fallback:
+                                fallback.append(mp)
+        except Exception:
+            pass
+    return preferred + fallback
+
+
+def resolve_local_mount_path(root: str, rel_path: str = "") -> str | None:
+    """尝试将 SSH 远程快照路径解析为本地系统对应的网络挂载路径（如 SMB、WebDAV、NFS）。
+
+    支持 macOS（/Volumes/*）、Windows（UNC 或网络映射盘符）及 Linux（/mnt, /media）。
+    返回存在于本地磁盘的实际绝对路径；若未挂载或不存在则返回 None。
+    """
+    if not str(root or "").startswith("ssh://"):
+        return None
+
+    parsed = urllib.parse.urlparse(root)
+    host = parsed.hostname or ""
+    remote_path = parsed.path.rstrip("/")
+    clean_rel = rel_path.strip("/\\").replace("\\", "/")
+    remote_full = (
+        posixpath.normpath(posixpath.join(remote_path, clean_rel))
+        if clean_rel
+        else remote_path
+    )
+
+    parts = [p for p in remote_full.split("/") if p]
+    sub_paths: list[str] = []
+
+    # 1. 尝试去掉群晖/Linux 存储卷前缀 (如 /volume1, /volume2)
+    if parts and re.match(r"^volume\d+$", parts[0], re.IGNORECASE):
+        sub_paths.append("/".join(parts[1:]))
+        if len(parts) > 2:
+            sub_paths.append("/".join(parts[2:]))
+    elif len(parts) > 1 and parts[0] in ("mnt", "media", "shares", "share"):
+        sub_paths.append("/".join(parts[1:]))
+        if len(parts) > 2:
+            sub_paths.append("/".join(parts[2:]))
+
+    sub_paths.append("/".join(parts))
+    if clean_rel:
+        sub_paths.append(clean_rel)
+
+    # 去重保留顺序
+    seen: set[str] = set()
+    unique_sub_paths: list[str] = []
+    for sp in sub_paths:
+        if sp and sp not in seen:
+            seen.add(sp)
+            unique_sub_paths.append(sp)
+
+    candidate_bases: list[str] = []
+
+    # 优先使用 mount 命令匹配到的对应主机的挂载点
+    if host:
+        candidate_bases.extend(get_mount_points_for_host(host))
+
+    # macOS /Volumes 下的所有挂载目录
+    if sys.platform == "darwin" and os.path.exists("/Volumes"):
+        try:
+            for v in os.listdir("/Volumes"):
+                vdir = os.path.join("/Volumes", v)
+                if os.path.isdir(vdir) and vdir not in candidate_bases:
+                    candidate_bases.append(vdir)
+        except Exception:
+            pass
+
+    # Windows 平台
+    if sys.platform == "win32":
+        # 1. 尝试 UNC 路径 \\host\share\path
+        share_rel = (
+            "/".join(parts[1:])
+            if (parts and re.match(r"^volume\d+$", parts[0], re.IGNORECASE))
+            else "/".join(parts)
+        )
+        if host and share_rel:
+            unc = f"\\\\{host}\\{share_rel.replace('/', chr(92))}"
+            if os.path.exists(unc):
+                return unc
+        # 2. 检查现有驱动器盘符 (D..Z)
+        import string
+
+        for letter in string.ascii_uppercase:
+            drive = f"{letter}:\\"
+            if os.path.exists(drive) and drive not in candidate_bases:
+                candidate_bases.append(drive)
+
+    # Linux 常见挂载目录
+    for mnt_root in ("/media", "/mnt", "/run/media"):
+        if os.path.isdir(mnt_root):
+            try:
+                for entry in os.listdir(mnt_root):
+                    edir = os.path.join(mnt_root, entry)
+                    if os.path.isdir(edir) and edir not in candidate_bases:
+                        candidate_bases.append(edir)
+            except Exception:
+                pass
+
+    # 在所有候选基础路径下查找匹配的目标
+    import unicodedata
+
+    def _nfc_lower(s: str) -> str:
+        return unicodedata.normalize("NFC", s).lower()
+
+    for base in candidate_bases:
+        base_name = os.path.basename(base.rstrip("/\\"))
+        base_name_norm = _nfc_lower(base_name) if base_name else ""
+        for sp in unique_sub_paths:
+            sp_parts = sp.split("/")
+            # 如果本地挂载点名称与相对路径的第一级相同（例如挂载点就是 /Volumes/苏氏公开，而 sp 是 苏氏公开/子目录）
+            if base_name_norm and sp_parts and base_name_norm == _nfc_lower(sp_parts[0]):
+                tail = "/".join(sp_parts[1:])
+                target = os.path.join(base, tail) if tail else base
+                if os.path.exists(target):
+                    return target
+
+            target = os.path.join(base, sp)
+            if os.path.exists(target):
+                return target
+
+            # 若 rel_path 为空（点击根节点），base 自身就是目标的情况
+            if (
+                not clean_rel
+                and base_name_norm
+                and any(base_name_norm == _nfc_lower(p) for p in parts)
+            ):
+                if os.path.exists(base):
+                    return base
+
+    return None

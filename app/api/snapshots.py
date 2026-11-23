@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import posixpath
 import subprocess
 import sys
 
@@ -270,13 +271,66 @@ class SnapshotsMixin:
     def reveal_path(self, root: str, rel_path: str) -> dict:
         """在资源管理器中定位一个对比节点对应的真实路径。
 
+        支持本地路径与 SSH 远程快照（自动映射到本地 SMB/WebDAV/NFS 挂载点）。
         目录：直接打开该文件夹（比 /select 更稳，尤其含空格路径）。
-        文件：explorer ``/select,`` + 路径分两个参数传入（list 形式，
-        空格/单引号由 CreateProcess 原样传递，勿拼成单个带引号字符串）。
+        文件：macOS 走 open -R 高亮，Windows 走 explorer /select, 高亮。
         目标已不存在时退而求其次打开父目录。
         """
-        full = os.path.join(root, rel_path) if rel_path else root
-        full = os.path.normpath(full)
+        is_ssh = str(root or "").startswith("ssh://")
+        if is_ssh:
+            from core import ssh_scanner
+            full = ssh_scanner.resolve_local_mount_path(root, rel_path)
+            if not full:
+                # 逐级向上回溯所有祖先目录（应对节点及多层父目录已在 NAS 端删除的情况，直至共享根目录）
+                cur_rel = str(rel_path or "").strip("/\\").replace("\\", "/")
+                ancestor_full = None
+                while cur_rel:
+                    cur_rel = posixpath.dirname(cur_rel)
+                    candidate = ssh_scanner.resolve_local_mount_path(root, cur_rel)
+                    if candidate and os.path.isdir(candidate):
+                        ancestor_full = candidate
+                        break
+                if not ancestor_full:
+                    candidate = ssh_scanner.resolve_local_mount_path(root, "")
+                    if candidate and os.path.isdir(candidate):
+                        ancestor_full = candidate
+
+                if ancestor_full:
+                    try:
+                        if sys.platform == "darwin":
+                            subprocess.Popen(["open", ancestor_full])
+                        elif hasattr(os, "startfile"):
+                            os.startfile(ancestor_full)  # noqa: S606
+                        else:
+                            subprocess.Popen(["xdg-open", ancestor_full])
+                        return {
+                            "ok": True,
+                            "message": i18n.t(
+                                "该项已不存在，已打开其最近存在的上级目录",
+                                "This item no longer exists; opened its nearest existing parent folder",
+                            ),
+                        }
+                    except OSError as exc:
+                        return {
+                            "error": i18n.t(
+                                f"无法打开：{ancestor_full}\n{exc}",
+                                f"Cannot open: {ancestor_full}\n{exc}",
+                            )
+                        }
+
+                remote_full = ssh_scanner.format_remote_display_path(root, rel_path)
+                return {
+                    "error": i18n.t(
+                        f"未检测到本地挂载点：{remote_full}\n请先在访达中通过 SMB 连接并挂载该共享文件夹。",
+                        f"No local mount point found for: {remote_full}\nPlease mount this share via SMB in Finder first.",
+                    )
+                }
+        else:
+            sep = "/" if sys.platform != "win32" else "\\"
+            clean_rel = rel_path.replace("\\" if sep == "/" else "/", sep) if rel_path else ""
+            full = os.path.join(root, clean_rel) if clean_rel else root
+            full = os.path.normpath(full)
+
         if sys.platform == "darwin":
             try:
                 if os.path.isdir(full):
@@ -303,25 +357,35 @@ class SnapshotsMixin:
                             f"Cannot open: {parent}\n{exc}",
                         )
                     }
-                return {"ok": True, "message": i18n.t(
-                    "该项已不存在，已打开其所在目录",
-                    "This item no longer exists; opened its parent folder instead")}
-            return {"error": i18n.t("路径不存在", "Path does not exist")}
+                return {
+                    "ok": True,
+                    "message": i18n.t(
+                        "该项已不存在，已打开其所在目录",
+                        "This item no longer exists; opened its parent folder instead",
+                    ),
+                }
+            return {
+                "error": i18n.t(
+                    f"路径不存在：{full}",
+                    f"Path does not exist: {full}",
+                )
+            }
 
         try:
             if os.path.isdir(full):
                 # 对比树多为目录；startfile 走 Shell 关联，空格路径可靠
-                os.startfile(full)  # noqa: S606
+                if hasattr(os, "startfile"):
+                    os.startfile(full)  # noqa: S606
+                else:
+                    subprocess.Popen(["xdg-open", full])
                 return {"ok": True}
             if os.path.isfile(full) or os.path.exists(full):
-                # /select, 与路径必须是两个 argv；合成 "/select,path" 或
-                # '/select,"path"' 在含空格时会落到「文档」/此电脑。
-                # 见 https://stackoverflow.com/questions/281888
-                windir = os.environ.get("WINDIR") or r"C:\Windows"
-                explorer = os.path.join(windir, "explorer.exe")
-                subprocess.Popen(  # noqa: S603
-                    [explorer, "/select,", full]
-                )
+                if sys.platform == "win32":
+                    windir = os.environ.get("WINDIR") or r"C:\Windows"
+                    explorer = os.path.join(windir, "explorer.exe")
+                    subprocess.Popen([explorer, "/select,", full])  # noqa: S603
+                else:
+                    subprocess.Popen(["xdg-open", os.path.dirname(full) or full])
                 return {"ok": True}
         except OSError as exc:
             return {
@@ -333,7 +397,10 @@ class SnapshotsMixin:
         parent = os.path.dirname(full)
         if parent and os.path.isdir(parent):
             try:
-                os.startfile(parent)  # noqa: S606
+                if hasattr(os, "startfile"):
+                    os.startfile(parent)  # noqa: S606
+                else:
+                    subprocess.Popen(["xdg-open", parent])
             except OSError as exc:
                 return {
                     "error": i18n.t(
@@ -341,8 +408,16 @@ class SnapshotsMixin:
                         f"Cannot open: {parent}\n{exc}",
                     )
                 }
-            return {"ok": True, "message": i18n.t(
-                "该项已不存在，已打开其所在目录",
-                "This item no longer exists; opened its parent folder instead")}
-        return {"error": i18n.t(
-            f"路径已不存在：{full}", f"Path no longer exists: {full}")}
+            return {
+                "ok": True,
+                "message": i18n.t(
+                    "该项已不存在，已打开其所在目录",
+                    "This item no longer exists; opened its parent folder instead",
+                ),
+            }
+        return {
+            "error": i18n.t(
+                f"路径不存在：{full}",
+                f"Path does not exist: {full}",
+            )
+        }
